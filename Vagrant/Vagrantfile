@@ -1,0 +1,125 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+PHPVERSION = '7.3'
+httpport = 80
+PROJECTID = 'ci3ReactACL'
+DOCROOT = '/var/www/html'
+# Update 28Apr2023
+Vagrant.configure("2") do |config|
+  #config.vm.box = "debian/bullseye64"
+  config.vm.box = "bullseye_vb6142"
+  config.ssh.insert_key = false
+  config.vm.box_check_update = false
+  config.vm.network "forwarded_port", guest: 80, host: "#{httpport}"
+  config.vm.synced_folder ".", "/vagrant", :owner => "vagrant", :group => "vagrant"
+  config.vm.synced_folder "CI3-party", "/CI3Party", :owner => "vagrant", :group => "vagrant"
+  config.vm.synced_folder "CI3-Wingman", "/CI3Wingman", :owner => "vagrant", :group => "vagrant"
+
+  # https://serverfault.com/questions/453185/vagrant-virtualbox-dns-10-0-2-3-not-working
+  config.vm.provider "virtualbox" do |vb|
+    vb.cpus = 4
+    vb.gui = false
+    vb.memory = 8192
+    vb.customize ["modifyvm", :id, "--natdnshostresolver1", "on"]
+    #vb.check_guest_additions = false
+    vb.customize ["modifyvm", :id, "--natnet1", "10.10.10/24"]
+  end
+  $LNMPInstall = <<-SCRIPT
+    sudo apt-get install -y apt-transport-https lsb-release ca-certificates nginx
+    sudo systemctl status nginx
+    sudo systemctl enable nginx
+    wget https://packages.sury.org/php/apt.gpg -O apt.gpg && sudo apt-key add apt.gpg
+    echo "deb https://packages.sury.org/php/ buster main" | sudo tee /etc/apt/sources.list.d/php.list
+    sudo apt-get update
+    sudo apt-get install -y php#{PHPVERSION}-fpm php#{PHPVERSION}-common php#{PHPVERSION}-cli php#{PHPVERSION}-curl php#{PHPVERSION}-gd php#{PHPVERSION}-gmp php#{PHPVERSION}-intl php#{PHPVERSION}-mbstring php#{PHPVERSION}-mysql php#{PHPVERSION}-soap php#{PHPVERSION}-xmlrpc php#{PHPVERSION}-xml php#{PHPVERSION}-zip php#{PHPVERSION}-redis php#{PHPVERSION}-ldap 
+    sudo apt-get install -y default-mysql-client
+    sudo apt-get install -y mariadb-server mariadb-client
+    sudo systemctl start mariadb.service
+    sudo systemctl enable mariadb.service
+SCRIPT
+  $nodejsInstall = <<-SCRIPT
+    sudo apt-get install -y software-properties-common
+    curl -sL https://deb.nodesource.com/setup_14.x | sudo -E bash -
+    sudo apt-get install -y nodejs
+    # sudo apt-get install gcc g++ make
+    curl -sL https://dl.yarnpkg.com/debian/pubkey.gpg | gpg --dearmor | sudo tee /usr/share/keyrings/yarnkey.gpg >/dev/null
+    echo "deb [signed-by=/usr/share/keyrings/yarnkey.gpg] https://dl.yarnpkg.com/debian stable main" | sudo tee /etc/apt/sources.list.d/yarn.list
+    sudo apt-get update && sudo apt-get install yarn
+    sudo npm install -g node-gyp grunt-cli shifter
+    # sudo yarn add node-sass
+SCRIPT
+  # Ramp up
+  config.vm.provision "shell", inline: <<-SHELL
+    { sudo rm /var/lib/dpkg/lock-frontend; } || { sudo rm /var/lib/dpkg/lock; } || { sudo rm /var/cache/apt/archives/lock; } || { echo "Clean lock"; }
+    sudo apt-get update
+    sudo apt-get install -y -q curl dnsutils git jq gnupg2 net-tools htop python sudo wget nfs-common unzip > /tmp/apt-out 2>&1
+  SHELL
+  config.vm.provision "file", source: "Vagrantfiles/dbg-wizard.php", destination: "dbg-wizard.php"
+  config.vm.define "#{PROJECTID}" do|debian|
+    debian.vm.provision :shell, inline: $LNMPInstall, privileged: false
+    debian.vm.provision :shell, privileged: false, inline:  <<-SHELL
+      curl -Ss https://getcomposer.org/installer | php
+      sudo mv composer.phar /usr/bin/composer
+      composer -V
+      sudo usermod -aG www-data vagrant
+    SHELL
+    debian.vm.provision :shell, inline: $nodejsInstall
+    debian.vm.provision :shell, path: "Vagrantfiles/mariadb-10.5.sh"
+    debian.vm.provision :shell, path: "Vagrantfiles/fpm-dev.sh", privileged: false, env: {"DOCROOT" => "/var/www/html", "sshUsername" => "vagrant" }
+    debian.vm.provision :shell, path: "Vagrantfiles/fpm-prod.sh", privileged: false, env: {"DOCROOT" => "/var/www/html", "sshUsername" => "vagrant" }
+    debian.vm.provision :shell, path: "Vagrantfiles/gen_fpm_pool_conf.sh", privileged: false, env: {"PHPVERSION" => "#{PHPVERSION}", "FILESIZE" => '1024M'}
+    debian.vm.provision :shell, path: "Vagrantfiles/gen_default_site_conf.sh", privileged: false, env: {"NGINXPORT" => "#{httpport}", "DOCROOT" => "/var/www/html", "SERVERNAME" => "default", "FILESIZE" => '1024M'}
+    # NGINXPORT=80 DOCROOT='/var/www/html/ci3' SERVERNAME=default FILESIZE='1024M' bash gen_default_site_conf.sh
+    debian.vm.provision :shell, path: "Vagrantfiles/ci3-nginx.sh", privileged: false, env: {"DOCROOT" => "/var/www/html/#{PROJECTID}", "sshUsername" => "vagrant" }
+    # DOCROOT='/var/www/html/ci3' sshUsername='vagrant' bash go.sh
+    # 加 ci3(virtualhost)
+    debian.vm.provision :shell, path: "Vagrantfiles/gen_virtualhost.sh", privileged: false, env: {"DOCROOT" => "/var/www/html/#{PROJECTID}", "PROJECTID" => "#{PROJECTID}" }
+    # DOCROOT='/var/www/html/ci3' PROJECTID='ci3rjsphy' bash gen_virtualhost.sh
+    # 重啟 Nginx
+    # { sudo nginx -t; } && { sudo systemctl restart nginx; sudo systemctl restart php7.3-fpm; }
+
+    #   Patch CI3, 開始擴充CI3.
+    ##    1. Fix composer.json bug.
+    debian.vm.provision :shell, path: "CI3-party/patchs/fix_composer_json.sh", privileged: false, env: {"DOCROOT" => "/var/www/html/#{PROJECTID}" }
+    ##    2. HMVC
+    debian.vm.provision :shell, path: "CI3-party/HMVC/ci3-HMVC.sh", privileged: false, env: {"DOCROOT" => "/var/www/html/#{PROJECTID}", "sshUsername" => "vagrant" }
+    # DOCROOT='/var/www/html/ci3' bash ci3-HMVC.sh
+    ##    3. 加 DevelBar
+    debian.vm.provision :shell, path: "CI3-party/DevelBar/ci3-develBar.sh", privileged: false, env: {"DOCROOT" => "/var/www/html/#{PROJECTID}", "sshUsername" => "vagrant" }
+    # DOCROOT='/var/www/html/ci3' bash ci3-develBar.sh
+    ##    4. 加 SmartACL
+    debian.vm.provision :shell, path: "CI3-party/SmartyACL/ci3-smartyACL.sh", privileged: false, env: {"DOCROOT" => "/var/www/html/#{PROJECTID}", "PROJECTID" => "#{PROJECTID}", "sshUsername" => "vagrant" }
+    ##    5. Fix 網址出現 index.php 問題, Remove index.php from url.
+    debian.vm.provision :shell, path: "CI3-party/patchs/fix_index_page.sh", privileged: false, env: {"DOCROOT" => "/var/www/html/#{PROJECTID}", "sshUsername" => "vagrant" }
+
+    #   架Demo: reactadmin
+    debian.vm.provision :shell, path: "CI3-Wingman/ReactAdmin/ci3-reactadmin.sh", privileged: false, env: {"DOCROOT" => "/var/www/html/reactadmin", "PROJECTID" => "reactadmin", "sshUsername" => "vagrant" }
+    debian.vm.provision :shell, path: "vagrantfiles/gen_virtualhost.sh", privileged: false, env: {"DOCROOT" => "/var/www/html/reactadmin", "PROJECTID" => "reactadmin" }
+
+    ##    6. 加 react 進 ci3
+    debian.vm.provision :shell, path: "CI3-party/ReactJquery/ci3-JqueryReact.sh", privileged: false, env: {"DOCROOT" => "/var/www/html/#{PROJECTID}", "PROJECTID" => "#{PROJECTID}", "sshUsername" => "vagrant" }
+
+    debian.vm.provision :shell, privileged: false, inline:  <<-SHELL
+      #cd /var/www/html
+      #git clone https://github.com/martinliao/ci3React.git
+      echo -e "cd /var/www/html" | tee -a ~/.bash_profile
+      if grep -q "alias ll" ~/.bashrc; then
+        sed -i 's|[#]*alias[ ]*ll[ ]*=.*|alias ll="ls \$LS_OPTIONS -l"|' ~/.bashrc
+      else
+          echo -e "alias ll='ls \$LS_OPTIONS -l'" | tee -a ~/.bashrc > /dev/null 2>&1
+      fi
+      echo "set mouse-=a" | tee -a ~/.vimrc
+    SHELL
+    <<-COMMENT
+    debian.vm.provision :shell, privileged: false, inline:  <<-SHELL
+      mysql -uroot -pjack5899 -e "Create Database IF NOT EXISTS ci3React CHARACTER SET utf8mb4 Collate utf8mb4_unicode_ci;"
+      ## 設定 database
+      cd /var/www/html/ci3React/application/config
+      sed -i "s/\(.*'username'[ ]\).*/\1=> 'root',/g" database.php
+      sed -i "s/\(.*'password'[ ]\).*/\1=> 'jack5899',/g" database.php
+      sed -i "s/\(.*'database'[ ]\).*/\1=> 'ci3React',/g" database.php
+    SHELL
+    COMMENT
+    #debian.vm.provision :shell, path: "Vagrantfiles/gen_virtualhost.sh", privileged: false, env: {"DOCROOT" => "/var/www/html/ci3React", "PROJECTID" => "ci3React" }
+  end
+end

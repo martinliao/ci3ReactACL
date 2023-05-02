@@ -1,0 +1,204 @@
+# -*- mode: ruby -*-
+# vi: set ft=ruby :
+PHPVERSION = '7.3'
+httpport = 80
+PROJECTID = 'DCSDCI3Phy'
+DOCROOT = '/var/www/html'
+
+Vagrant.configure("2") do |config|
+  config.vm.box = "debian/bullseye64"
+  config.ssh.insert_key = false
+  config.vm.box_check_update = false
+  config.vm.network "forwarded_port", guest: 80, host: "#{httpport}"
+  #config.vm.network "forwarded_port", guest: 3000, host: 3000 # React
+  config.vm.synced_folder ".", "/vagrant", :owner => "vagrant", :group => "vagrant"
+  config.vm.synced_folder "CI3-party", "/CI3", :owner => "vagrant", :group => "vagrant"
+  config.vm.synced_folder "../ClassMgt", "/ClassMgt", :owner => "vagrant", :group => "vagrant"
+  config.vm.synced_folder "../Phy", "/Phy", :owner => "vagrant", :group => "vagrant"
+  config.vm.synced_folder "Fet-party", "/FetOldParty", :owner => "vagrant", :group => "vagrant"
+
+  # https://serverfault.com/questions/453185/vagrant-virtualbox-dns-10-0-2-3-not-working
+  config.vm.provider "virtualbox" do |vb|
+    vb.cpus = 4
+    vb.gui = false
+    vb.memory = 8192
+    vb.customize ["modifyvm", :id, "--natdnshostresolver1", "on"]
+    #vb.check_guest_additions = false
+    vb.customize ["modifyvm", :id, "--natnet1", "10.10.10/24"]
+  end
+  $RampUP = <<-SCRIPT
+    sudo apt-get install -y -q curl dnsutils git jq gnupg2 net-tools htop python sudo wget nfs-common unzip > /tmp/apt-out 2>&1
+SCRIPT
+  $LNMPInstall = <<-SCRIPT
+    sudo apt-get install -y apt-transport-https lsb-release ca-certificates nginx
+    sudo systemctl status nginx
+    sudo systemctl enable nginx
+    wget https://packages.sury.org/php/apt.gpg -O apt.gpg && sudo apt-key add apt.gpg
+    echo "deb https://packages.sury.org/php/ buster main" | sudo tee /etc/apt/sources.list.d/php.list
+    sudo apt-get update
+    sudo apt-get install -y php#{PHPVERSION}-fpm php#{PHPVERSION}-common php#{PHPVERSION}-cli php#{PHPVERSION}-curl php#{PHPVERSION}-gd php#{PHPVERSION}-gmp php#{PHPVERSION}-intl php#{PHPVERSION}-mbstring php#{PHPVERSION}-mysql php#{PHPVERSION}-soap php#{PHPVERSION}-xmlrpc php#{PHPVERSION}-xml php#{PHPVERSION}-zip php#{PHPVERSION}-redis php#{PHPVERSION}-ldap 
+    sudo apt-get install -y default-mysql-client
+    sudo apt-get install -y mariadb-server mariadb-client
+    sudo systemctl start mariadb.service
+    sudo systemctl enable mariadb.service
+SCRIPT
+  $nodejsInstall = <<-SCRIPT
+    sudo apt-get install -y software-properties-common
+    curl -sL https://deb.nodesource.com/setup_14.x | sudo -E bash -
+    sudo apt-get install -y nodejs
+    # sudo apt-get install gcc g++ make
+    curl -sL https://dl.yarnpkg.com/debian/pubkey.gpg | gpg --dearmor | sudo tee /usr/share/keyrings/yarnkey.gpg >/dev/null
+    echo "deb [signed-by=/usr/share/keyrings/yarnkey.gpg] https://dl.yarnpkg.com/debian stable main" | sudo tee /etc/apt/sources.list.d/yarn.list
+    sudo apt-get update && sudo apt-get install yarn
+    sudo npm install -g node-gyp grunt-cli shifter
+    #sudo yarn add node-sass
+SCRIPT
+  config.vm.provision "shell", inline: <<-SHELL
+    { sudo rm /var/lib/dpkg/lock-frontend; } || { sudo rm /var/lib/dpkg/lock; } || { sudo rm /var/cache/apt/archives/lock; } || { echo "Clean lock"; }
+    sudo apt-get update
+  SHELL
+  config.vm.provision "file", source: "vagrantfiles/dbg-wizard.php", destination: "dbg-wizard.php"
+  config.vm.define "#{PROJECTID}" do|debian|
+    debian.vm.provision :shell, inline: $RampUP
+    debian.vm.provision :shell, inline: $LNMPInstall, privileged: false
+    debian.vm.provision :shell, inline:  <<-SHELL
+      curl -Ss https://getcomposer.org/installer | php
+      sudo mv composer.phar /usr/bin/composer
+      composer -V
+      sudo usermod -aG www-data vagrant
+      cd 
+      if ! grep -q "cd #{DOCROOT}" ~/.bash_profile; then
+        echo -e "cd #{DOCROOT}" | tee -a ~/.bash_profile > /dev/null 2>&1
+      fi
+      if grep -q "alias ll" ~/.bashrc; then
+        sed -i 's|[#]*alias[ ]*ll[ ]*=.*|alias ll="ls \$LS_OPTIONS -l"|' ~/.bashrc
+      else
+          echo -e "alias ll='ls \$LS_OPTIONS -l'" | tee -a ~/.bashrc > /dev/null 2>&1
+      fi
+      if ! grep -q "[ ]*set[ ]*mouse.*" ~/.vimrc; then
+          echo "set mouse-=a" >> ~/.vimrc
+      fi
+    SHELL
+    debian.vm.provision :shell, inline: $nodejsInstall
+    debian.vm.provision :shell, path: "vagrantfiles/mariadb-10.5.sh"
+    debian.vm.provision :shell, path: "vagrantfiles/fpm-dev.sh", privileged: false, env: {"DOCROOT" => "/var/www/html", "sshUsername" => "vagrant" }
+    debian.vm.provision :shell, path: "vagrantfiles/fpm-prod.sh", privileged: false, env: {"DOCROOT" => "/var/www/html", "sshUsername" => "vagrant" }
+
+    debian.vm.provision :shell, path: "vagrantfiles/gen_fpm_pool_conf.sh", privileged: false, env: {"PHPVERSION" => "#{PHPVERSION}", "FILESIZE" => '1024M'}
+
+    debian.vm.provision :shell, path: "vagrantfiles/gen_default_site_conf.sh", privileged: false, env: {"NGINXPORT" => "#{httpport}", "DOCROOT" => "/var/www/html", "SERVERNAME" => "default", "FILESIZE" => '1024M'}
+    # NGINXPORT=80 DOCROOT='/var/www/html/ci3' SERVERNAME=default FILESIZE='1024M' bash gen_default_site_conf.sh
+
+    debian.vm.provision :shell, path: "vagrantfiles/ci3-nginx.sh", privileged: false, env: {"DOCROOT" => "/var/www/html/#{PROJECTID}", "sshUsername" => "vagrant" }
+    # DOCROOT='/var/www/html/ci3' sshUsername='vagrant' bash go.sh
+
+    # 開始架 CI3
+    #   加 ci3(virtualhost)
+    debian.vm.provision :shell, path: "vagrantfiles/gen_virtualhost.sh", privileged: false, env: {"DOCROOT" => "/var/www/html/#{PROJECTID}", "PROJECTID" => "#{PROJECTID}" }
+    # DOCROOT='/var/www/html/ci3' PROJECTID='ci3rjsphy' bash gen_virtualhost.sh
+    # 重啟 Nginx
+    debian.vm.provision :shell, inline: """
+      { sudo nginx -t; } && { sudo systemctl restart nginx; sudo systemctl restart php#{PHPVERSION}-fpm; }
+    """, privileged: false
+    # { sudo nginx -t; } && { sudo systemctl restart nginx; sudo systemctl restart php7.3-fpm; }
+
+    #   Patch CI3, 開始擴充CI3.
+    ##    Fix composer.json bug.
+    debian.vm.provision :shell, path: "CI3-party/patchs/fix_composer_json.sh", privileged: false, env: {"DOCROOT" => "/var/www/html/#{PROJECTID}" }
+    ##    HMVC
+    debian.vm.provision :shell, path: "vagrantfiles/ci3-HMVC.sh", privileged: false, env: {"DOCROOT" => "/var/www/html/#{PROJECTID}", "sshUsername" => "vagrant" }
+    # DOCROOT='/var/www/html/ci3' bash ci3-HMVC.sh
+
+    ##    加 DevelBar
+    debian.vm.provision :shell, inline: """cp -r /CI3/DevelBarApp ~/""", privileged: false
+    debian.vm.provision :shell, path: "vagrantfiles/ci3-develBar.sh", privileged: false, env: {"DOCROOT" => "/var/www/html/#{PROJECTID}", "sshUsername" => "vagrant" }
+    # DOCROOT='/var/www/html/ci3' bash ci3-develBar.sh
+
+    ##    加 SmartACL
+    debian.vm.provision :shell, inline: """cp -r /CI3/SmartyACL ~/""", privileged: false
+    debian.vm.provision :shell, path: "vagrantfiles/ci3-smartyACL.sh", privileged: false, env: {"DOCROOT" => "/var/www/html/#{PROJECTID}", "PROJECTID" => "#{PROJECTID}", "sshUsername" => "vagrant" }
+
+    ##    Fix /Patch(修改config...等)
+    # Remove index.php from url.
+    debian.vm.provision :shell, path: "CI3-party/patchs/fix_index_php.sh", privileged: false, env: {"DOCROOT" => "/var/www/html/#{PROJECTID}", "sshUsername" => "vagrant" }
+    #debian.vm.provision :shell, path: "CI3-party/patchs/add_Mobile-Detect.sh", privileged: false, env: {"DOCROOT" => "/var/www/html/#{PROJECTID}", "sshUsername" => "vagrant" }
+
+    # SimpleLayout(因與RequireJS-Layout相衝)
+    <<-COMMENT
+    debian.vm.provision :shell, inline: """cp -r /CI3/SimpleLayout ~/SimpleLayout""", privileged: false
+    debian.vm.provision :shell, path: "CI3-party/SimpleLayout/ci3-SimpleLayout.sh", privileged: false, env: {"DOCROOT" => "/var/www/html/#{PROJECTID}", "sshUsername" => "vagrant" }
+    # DOCROOT='/var/www/html/ci3' sshUsername='vagrant' bash ~/SimpleLayout/ci3-SimpleLayoust.sh
+
+    # CRUE(2nd Theme: CRUD)
+    debian.vm.provision :shell, inline: """cp -r /CI3/CRUD ~/CRUD""", privileged: false
+    debian.vm.provision :shell, path: "CI3-party/CRUD/ci3-crud.sh", privileged: false, env: {"DOCROOT" => "/var/www/html/#{PROJECTID}", "PROJECTID" => "#{PROJECTID}", "sshUsername" => "vagrant" }
+    # DOCROOT='/var/www/html/ci3' PROJECTID='ci3' sshUsername='vagrant' bash ci3-crud.sh
+    debian.vm.provision :shell, inline: """
+      sudo npm install -g bower
+      cd /var/www/html/#{PROJECTID}/public/themes/CRUD
+      bower install
+    """, privileged: false
+    COMMENT
+
+    # RequireJS(to ci3)
+    debian.vm.provision :shell, inline: """cp -r /CI3/CI3-RequireJS ~/CI3-RequireJS""", privileged: false
+    debian.vm.provision :shell, path: "CI3-party/CI3-RequireJS/ci3-RequireJS.sh", privileged: false, env: {"DOCROOT" => "/var/www/html/#{PROJECTID}", "PROJECTID" => "#{PROJECTID}", "sshUsername" => "vagrant" }
+
+    # Javascript Controller (to ci3)
+    debian.vm.provision :shell, inline: """cp -r /CI3/CI3-JavascriptCtrl ~/CI3-JavascriptCtrl""", privileged: false
+    debian.vm.provision :shell, path: "CI3-party/CI3-JavascriptCtrl/ci3-JavascriptCtrl.sh", privileged: false, env: {"DOCROOT" => "/var/www/html/#{PROJECTID}", "PROJECTID" => "#{PROJECTID}", "sshUsername" => "vagrant" }
+
+    # fix HMVC
+    debian.vm.provision :shell, path: "Fet-party/Patch-HMVC.sh", privileged: false, env: {"FetDcsdPhy" => "/var/www/html/phy/base/admin", "DOCROOT" => "/var/www/html/#{PROJECTID}" }
+    # DOCROOT=/var/www/html/ci3rjsphy FetDcsdPhy=/var/www/html/phy/base/admin bash Patch-HMVC.sh
+
+    # 開始架Demo站台
+    ## 架Demo: CI_LTE
+    debian.vm.provision :shell, path: "Thirdparty/CI_LTE/ci3-CI_LTE.sh", privileged: false, env: {"DOCROOT" => "/var/www/html/ci_lte", "PROJECTID" => "ci_lte", "sshUsername" => "vagrant" }
+    debian.vm.provision :shell, path: "vagrantfiles/gen_virtualhost.sh", privileged: false, env: {"DOCROOT" => "/var/www/html/ci_lte", "PROJECTID" => "ci_lte" }
+
+    ## 架Demo: codeignitor-requirejs-backbone
+    debian.vm.provision :shell, path: "vagrantfiles/ci3-requirejs-backbone.sh", privileged: false, env: {"DOCROOT" => "/var/www/html/codeignitor-requirejs-backbone", "PROJECTID" => "codeignitor-requirejs-backbone", "sshUsername" => "vagrant" }
+    # 加 virtualhost
+    debian.vm.provision :shell, path: "vagrantfiles/gen_virtualhost.sh", privileged: false, env: {"DOCROOT" => "/var/www/html/codeignitor-requirejs-backbone", "PROJECTID" => "codeignitor-requirejs-backbone" }
+    # DOCROOT='/var/www/html/codeignitor-requirejs-backbone' PROJECTID='codeignitor-requirejs-backbone' bash gen_virtualhost.sh
+
+    ## 架Demo: Phy(舊版 Phy, AKA. dcsdcourse, 請確認 /Phy 存在!!)
+    debian.vm.provision :shell, inline: """mkdir -p /var/www/html/phy && cp -r /Phy/* /var/www/html/phy/ && chown -R vagrant:www-data /var/www/html/phy""", privileged: true
+    # 加 phy/base/admin(virtualhost)
+    debian.vm.provision :shell, path: "Fet-party/gen_phy_virtualhost.sh", privileged: false, env: {"DOCROOT" => "/var/www/html/phy/base/admin", "ALIAS" => "phy/base/admin", "PROJECTID" => "phy" }
+    # DOCROOT='/var/www/html/phy/base/admin' ALIAS='phy/base/admin' PROJECTID='phy' bash ~/gen_phy_virtualhost.sh
+
+    # 架Demo: ClassMgt
+    debian.vm.provision :shell, inline: """cp -r /ClassMgt /var/www/html/""", privileged: false
+    debian.vm.provision :shell, inline: """cp -r /ClassMgt /var/www/html/ && chown -R vagrant:www-data /var/www/html/ClassMgt""", privileged: true
+    debian.vm.provision :shell, path: "vagrantfiles/gen_virtualhost.sh", privileged: false, env: {"DOCROOT" => "/var/www/html/ClassMgt", "PROJECTID" => "ClassMgt" }
+
+    #  開始加 DCSD舊版
+    ##  修 phy/base/admin 問題...
+    debian.vm.provision :shell, inline: """chmod g+w /var/www/html/phy/base/admin/application/cache""", privileged: true
+    ##    Fix 舊版 bug(bf2022)
+    debian.vm.provision :shell, path: "Fet-party/Phy-Fix/fix_csrf.sh", privileged: false, env: {"DOCROOT" => "/var/www/html/phy/base/admin" }
+    ##    DCSD-index
+    #debian.vm.provision :shell, inline: """cp -r /Phy ~/FetDcsdPhy""", privileged: false
+    debian.vm.provision :shell, path: "Fet-party/DcsdIndex/DcsdIndex.sh", privileged: false, env: {"FetDcsdPhy" => "/var/www/html/phy/base/admin", "DOCROOT" => "/var/www/html/#{PROJECTID}", "sshUsername" => "vagrant" }
+    # FetDcsdPhy='/var/www/html/phy/base/admin/' DOCROOT='/var/www/html/ci3rjsphy' sshUsername='vagrant' bash DcsdIndex.sh
+
+    # Template, 在 load
+    # $autoload['libraries'] = array('form_validation', 'ion_auth', 'template', 'common/mobile_detect');
+    # array_push($autoload['libraries'], 'template')
+    #  or 
+    # $this->load->library('template');
+    # 然後, 在 controller 
+    #   $this->template->auth_render(
+
+    ##    1. Patch {Layout,Auth}
+    debian.vm.provision :shell, path: "Fet-party/Patch-Layout.sh", privileged: false, env: {"FetDcsdPhy" => "/var/www/html/phy/base/admin", "DOCROOT" => "/var/www/html/#{PROJECTID}" }
+    debian.vm.provision :shell, path: "Fet-party/Patch-Auth.sh", privileged: false, env: {"DOCROOT" => "/var/www/html/#{PROJECTID}" }
+
+    ##    2. DATA(選單 2A~2G)
+    debian.vm.provision :shell, path: "Fet-party/data/2-Data.sh", privileged: false, env: {"FetDcsdPhy" => "/var/www/html/phy/base/admin", "DOCROOT" => "/var/www/html/#{PROJECTID}", "sshUsername" => "vagrant" }    
+    # 3. 3B.規劃階段
+    debian.vm.provision :shell, path: "Fet-party/planning/3B-Createclass.sh", privileged: false, env: {"FetDcsdPhy" => "/var/www/html/phy/base/admin", "DOCROOT" => "/var/www/html/#{PROJECTID}", "sshUsername" => "vagrant" }
+  end
+end

@@ -1,0 +1,293 @@
+def JOBID= 'Ci3Deploy'
+
+/*
+    CI3: https://github.com/bcit-ci/CodeIgniter/archive/refs/tags/3.1.13.zip
+    CI3 安裝參考: https://codeigniter.com/userguide3/installation/index.html
+    HMVC(有很多, site: https://sites.google.com/click-ap.com/dcsd2023/codeiginter3/hmvc?authuser=0)
+        https://github.com/martinliao/HMVC
+    DevelBar: 
+        https://github.com/martinliao/CodeIgniter-develbar
+*/
+import groovy.transform.Field
+@Field def PROJECTID= 'ci3'
+@Field def CIVERSION= '3.1.13'
+@Field def HMVCVERSION= '0.3'
+@Field def DEVELBARVERSION= '1.2'
+
+properties([
+    parameters([
+        booleanParam(name: 'dryRun', defaultValue: false),
+        booleanParam(name: 'doClean', defaultValue: false),
+
+        string(name: 'sshURI', trim: true, defaultValue: 'skyap@192.168.50.'),
+        credentials(name: 'CREDID', credentialType: 'com.cloudbees.jenkins.plugins.sshcredentials.impl.BasicSSHUserPrivateKey', defaultValue: 'lxc2023'),
+        string(name: 'DOCROOT', trim: true, defaultValue: '/var/www/html/ci3'),
+        booleanParam(name: 'addHMVC', defaultValue: true),
+        booleanParam(name: 'addDevelBar', defaultValue: true),
+        booleanParam(name: 'addACL', defaultValue: true, description: 'SmartyACL'),
+    ])
+])
+
+def sshUsername= sshURI.contains('@') ? sshURI.tokenize("@")[0] : 'skyap'
+def _remoteIP= sshURI.contains('@') ? sshURI.tokenize("@")[1] : sshURI
+def remoteIP= _remoteIP.tokenize(":")[0]
+def sshPort= _remoteIP.tokenize(":")[1]?.trim() ? _remoteIP.tokenize(":")[1].toInteger() : 22
+
+if (!remoteIP?.trim()) {
+    error "The remoteIP is null or empty!"
+}
+
+dryRun= Boolean.valueOf(dryRun)
+def boolDryRun= dryRun ? 'v':'X' // ✓
+doClean= Boolean.valueOf(doClean)
+def boolClean= doClean ? 'v':'X' // ✓
+
+addHMVC= Boolean.valueOf(addHMVC)
+addDevelBar= Boolean.valueOf(addDevelBar)
+addACL= Boolean.valueOf(addACL)
+
+def cmdResult
+def remote = [name: "codeigniter3", host: "${remoteIP}", port: sshPort, allowAnyHosts: true, timeoutSec: 900]
+node ('master') {
+    stage("Ramp up") {
+        if (doClean ) {
+            cleanWs()
+        }
+        checkout scm
+        withCredentials([sshUserPrivateKey(credentialsId: CREDID, usernameVariable: 'userName', keyFileVariable: 'keyFile')]) {
+            remote.user = (sshUsername?.trim()) ? sshUsername : userName
+            remote.identityFile = keyFile
+
+            // Fix Phy實體需要 cache及 memory limit
+            '''
+            sshCommand remote: remote, dryRun: dryRun, command: """
+                chmod 775 ${DOCROOT}/base/admin/application/cache
+                sed -i 's/memory_limit.*/memory_limit = 1024M/g' /etc/php.ini
+            """
+            '''
+            sshCommand remote: remote, dryRun: dryRun, command: """
+                { unzip -v >/dev/null 2>&1; } || {
+                    sudo yum install -y unzip
+                }
+                { jq --version; } || {
+                    sudo yum install -y git jq >/dev/null 2>&1;
+                }
+                { composer -V; } || {
+                    curl -Ss https://getcomposer.org/installer | php
+                    sudo mv composer.phar /usr/bin/composer
+                }
+                composer -V
+            """
+            sshCommand remote: remote, dryRun: dryRun, command: """
+                if [ '${doClean}' == 'true' ]; then
+                    sudo rm -rf ${DOCROOT}
+                fi
+            """
+        }
+    }
+
+    stage("Deploy CI3") {
+        withCredentials([sshUserPrivateKey(credentialsId: CREDID, usernameVariable: 'userName', keyFileVariable: 'keyFile')]) {
+            remote.identityFile = keyFile
+
+            sshCommand remote: remote, dryRun: dryRun, command: """
+                if [ ! -d ${DOCROOT} ]; then 
+                    wget -q https://github.com/bcit-ci/CodeIgniter/archive/refs/tags/3.1.13.zip
+                    unzip 3.1.13.zip  > /dev/null 2>&1
+                    sudo mv CodeIgniter-3.1.13 ${DOCROOT}
+                    sudo chown -R ${sshUsername}:apache ${DOCROOT}
+                fi
+            """
+            sshPut remote: remote, from: 'CI3/ci3-apache.sh', into: '.'
+            // htaccess & Composer autoload
+            sshCommand remote: remote, dryRun: dryRun, command: """
+                PROJECTID=${PROJECTID} DOCROOT=${DOCROOT} bash ~/ci3-apache.sh
+                cd ${DOCROOT}
+                sed -i "s/\\(.*config\\['composer_autoload'\\][ ]\\).*/\\1= APPPATH . '..\\/vendor\\/autoload.php';/g" application/config/config.php
+                rm -f composer.lock
+                if [ ! -f '${DOCROOT}/composer.lock' ]; then
+                    composer install
+                fi
+            """
+        }    
+    }
+
+    stage("addHMVC") {
+        if( addHMVC) {
+            withCredentials([sshUserPrivateKey(credentialsId: CREDID, usernameVariable: 'userName', keyFileVariable: 'keyFile')]) {
+                remote.identityFile = keyFile
+                
+                // 修改 autoload 載入 url; #sed -i "s/.*autoload\['helper'\].*/\$autoload\[\'helper\'\] = array\('url'\);/g" autoload.php
+                // # wget -qO HMVC.zip https://github.com/N3Cr0N/CodeIgniter-HMVC/archive/refs/tags/0.3.zip
+                sshCommand remote: remote, dryRun: dryRun, command: """
+                    #git clone https://github.com/N3Cr0N/CodeIgniter-HMVC.git
+                    if [ ! -d 'CodeIgniter-HMVC-0.3' ]; then 
+                        wget -qO HMVC.zip https://github.com/martinliao/CodeIgniter-HMVC/archive/refs/tags/0.3.zip
+                        unzip HMVC.zip > /dev/null 2>&1
+                    fi
+                    cd CodeIgniter-HMVC-0.3
+                    cp application/core/{MY_Router.php,MY_Loader.php,MY_Controller.php,Frontend_Controller.php,Backend_Controller.php} ${DOCROOT}/application/core/
+                    mkdir -p ${DOCROOT}/application/modules
+
+                    cp -r application/modules/{welcome,Frontend,Backend} ${DOCROOT}/application/modules/
+                    cp -r application/third_party/MX ${DOCROOT}/application/third_party/
+
+                    # remove old Welcome.php ?
+                    # rm ${DOCROOT}/application/controllers/Welcome.php
+                """
+                sshPut remote: remote, from: 'CI3/HMVC/hmvc-config.php', into: '.'
+                sshCommand remote: remote, dryRun: dryRun, command: """
+                    cd ${DOCROOT}/application/config
+                    sed -i "s/\\(.*autoload\\['helper'\\][ ]\\).*/\\1= array\\('url'\\);/g" autoload.php
+                    cat ~/hmvc-config.php | tee -a config.php
+                """
+
+                // 加 whoops, ToDo: 與 DevelBar 除錯功能重覆? (whoops 會把 stack tree 列出)
+                // #sed -i "/[<?]php/a require_once __DIR__.'\/vendor\/autoload.php';" index.php # 已經有加在 config.php 了
+                sshPut remote: remote, from: 'CI3/HMVC/whoops.sh', into: '.'
+                sshCommand remote: remote, dryRun: dryRun, command: """
+                    DOCROOT=${DOCROOT} bash ~/whoops.sh
+                    cd ${DOCROOT}
+                    cat composer.json | jq '.require += { "filp/whoops": "^2.5" }' | sudo tee -i composer.json
+                    rm -f composer.lock
+                    composer install
+                """
+            }
+        }
+    }
+
+    stage("addDevelBar") {
+        if( addDevelBar) {
+            withCredentials([sshUserPrivateKey(credentialsId: CREDID, usernameVariable: 'userName', keyFileVariable: 'keyFile')]) {
+                remote.identityFile = keyFile
+                // application/config/autoload.php
+                //   $autoload['packages'] = array(APPPATH.'third_party/DevelBar');
+                // application/config/config.php
+                //   $config['enable_hooks'] = TRUE;
+                // application/config/hooks.php
+                //   $hook['display_override'][] = array(
+                //       'class'  	=> 'Develbar',
+                //       'function' 	=> 'debug',
+                //       'filename' 	=> 'Develbar.php',
+                //       'filepath' 	=> 'third_party/DevelBar/hooks'
+                //   );
+                // Enable or disable Develbar, open application/third_party/DevelBar/config/config.php :
+                //   $config['enable_develbar'] = TRUE;
+
+                sshPut remote: remote, from: 'CI3/DevelBar/develbar-hooks.php', into: '.'
+                // #git clone https://github.com/JCSama/CodeIgniter-develbar.git
+                sshCommand remote: remote, dryRun: dryRun, command: """
+                    wget -qO Develbar.zip https://github.com/martinliao/CodeIgniter-develbar/archive/refs/tags/1.2.zip
+                    unzip Develbar.zip > /dev/null 2>&1
+                    mv CodeIgniter-develbar* CodeIgniter-develbar
+                    cp -r CodeIgniter-develbar/third_party/DevelBar ${DOCROOT}/application/third_party
+                    cat ~/develbar-hooks.php | tee -a ${DOCROOT}/application/config/hooks.php
+                    cd ${DOCROOT}/application/config
+                    sed -i "s/\\(.*autoload\\['packages'\\][ ]\\).*/\\1= array\\(APPPATH . 'third_party\\/DevelBar'\\);/g" autoload.php
+                    sed -i "s/\\(.*config\\['enable_hooks'\\][ ]\\).*/\\1= TRUE;/g" config.php
+                """
+
+                sshPut remote: remote, from: 'CI3/DevelBar/develbar-core-MY_Loader.php', into: 'develbar-core-MY_Loader.php'
+                sshPut remote: remote, from: 'CI3/DevelBar/DevelBarProfiler.php', into: 'DevelBarProfiler.php'
+                // 加 DevelBar Profiler, 改 MY_Loader.php
+                sshCommand remote: remote, dryRun: dryRun, command: """
+                    cp DevelBarProfiler.php ${DOCROOT}/application/controllers/
+                    cp develbar-core-MY_Loader.php ${DOCROOT}/application/core/MY_Loader.php
+                """
+            }
+        }
+    }
+
+    stage("addACL") {
+        if( addACL) {
+            withCredentials([sshUserPrivateKey(credentialsId: CREDID, usernameVariable: 'userName', keyFileVariable: 'keyFile')]) {
+                remote.user = (sshUsername?.trim()) ? sshUsername : userName
+                remote.identityFile = keyFile
+                sshCommand remote: remote, dryRun: dryRun, command: """
+                    rm -f smarty-acl.zip
+                    rm -rf codeigniter-smarty-acl-* smarty-acl
+                    rm -rf smarty_app
+                """
+                sshCommand remote: remote, dryRun: dryRun, command: """
+                    wget -O smarty-acl.zip https://github.com/martinliao/codeigniter-smarty-acl/archive/refs/tags/V1.2.zip
+                    unzip smarty-acl.zip > /dev/null 2>&1
+                    mv -f codeigniter-smarty-acl-* smarty-acl
+                    cp -r smarty-acl/SmartyAcl ${DOCROOT}/application/third_party/
+                    mkdir -p ${DOCROOT}/application/migrations
+                    cp smarty-acl/001_Create_Smarty_Acl.php ${DOCROOT}/application/migrations
+                """
+                sshCommand remote: remote, dryRun: dryRun, command: """
+                    mysql -uroot -pjack5899 -e "Create Database IF NOT EXISTS ${PROJECTID} CHARACTER SET utf8mb4 Collate utf8mb4_unicode_ci;"
+                """
+
+                // 修改參數cd
+                sshCommand remote: remote, dryRun: dryRun, command: """
+                    cd ${DOCROOT}/application/config
+                    sed -i "s/\\(.*'username'[ ]\\).*/\\1=> 'root',/g" database.php
+                    sed -i "s/\\(.*'password'[ ]\\).*/\\1=> 'jack5899',/g" database.php
+                    sed -i "s/\\(.*'database'[ ]\\).*/\\1=> '${PROJECTID}',/g" database.php
+
+                    cd ${DOCROOT}/application/config
+                    sed -i "s/\\(.*config\\['migration_enabled'\\][ ]\\).*/\\1= TRUE;/g" migration.php
+                    # change timestamp to sequential
+                    sed -i "s/\\(.*config\\['migration_type'\\][ ]\\).*/\\1= 'sequential';/g" migration.php
+
+                    cd ${DOCROOT}/application/config
+                    sed -i "s/\\(.*autoload\\['libraries'\\][ ]\\).*/\\1= array\\('database','session'\\);/g" autoload.php
+                    sed -i "s/\\(.*autoload\\['packages'\\][ ]\\).*/\\1= array\\(APPPATH.'third_party\\/DevelBar',APPPATH.'third_party\\/SmartyAcl'\\);/g" autoload.php
+                """
+                sshPut remote: remote, from: 'CI3/SmartyACL/app.zip', into: '.'
+                // # DB 升級
+                sshCommand remote: remote, dryRun: dryRun, command: """
+                    mkdir -p smarty_app
+                    cd smarty_app && unzip ~/app.zip
+                    cd ~/
+                    echo "// SmartyaACL route" | tee -a ${DOCROOT}/application/config/routes.php
+                    echo "\\\$route['importdatabase'] = 'welcome/importdatabase';" | tee -a ${DOCROOT}/application/config/routes.php
+                    pwd
+                    cp -r smarty_app/modules/welcome ${DOCROOT}/application/modules/
+                """
+                echo "*** 請用 http://localhost/${PROJECTID}/importdatabase 進行資料庫升級"
+                // # 最少 UI, 只有 admin, login, logout
+                sshCommand remote: remote, dryRun: dryRun, command: """
+                    cat <<EOF | tee -a ${DOCROOT}/application/config/routes.php
+\\\$route['admin'] = 'Admin/index';
+\\\$route['admin/login'] = 'AuthAdmin/index';
+\\\$route['admin/logout'] = 'AuthAdmin/logout';
+EOF
+                    cp -r smarty_app/modules/Admin ${DOCROOT}/application/modules/
+                    cp -r smarty_app/modules/AuthAdmin ${DOCROOT}/application/modules/
+                    cp -r smarty_app/views/* ${DOCROOT}/application/views/
+
+                    sudo chown -R ${sshUsername}:apache ${DOCROOT}
+                """
+                echo """*** 請記得檢查/修改 config.php 內的 base_url
+                    \$base  = "http://".\$_SERVER['HTTP_HOST'];
+                    \$base .= str_replace(basename(\$_SERVER['SCRIPT_NAME']),"",\$_SERVER['SCRIPT_NAME']);
+                    \$config['base_url'] = \$base;
+                """
+                sshCommand remote: remote, dryRun: dryRun, command: """
+                    cd ${DOCROOT}/application/config
+                    sed -i "/.*config\\['base_url'\\] = '';/a\\\$config['base_url'] = \\\$base;" config.php
+                    sed -i "/.*config\\['base_url'\\] = '';/a\\\$base .= str_replace(basename(\\\$_SERVER['SCRIPT_NAME']),\\"\\",\\\$_SERVER['SCRIPT_NAME']);" config.php
+                    sed -i "/.*config\\['base_url'\\] = '';/a\\\$base  = \\"http://\\".\\\$_SERVER['HTTP_HOST'];" config.php
+                """
+                echo "*** done."
+            }
+        }
+    }
+
+    stage("Restart") {
+        def WWWROOT= "http://${remoteIP}/${PROJECTID}"
+        withCredentials([sshUserPrivateKey(credentialsId: CREDID, usernameVariable: 'userName', keyFileVariable: 'keyFile')]) {
+            remote.identityFile = keyFile
+            sshCommand remote: remote, dryRun: dryRun, command: """
+                sudo chown -R ${sshUsername}:apache ${DOCROOT}
+                { sudo httpd -t; } && { sudo systemctl restart httpd; } 
+            """
+        }
+        echo "*** Web-server restart is done. You can go to: ${WWWROOT}"
+        env.WWWROOT= WWWROOT.trim()
+    }
+
+}
