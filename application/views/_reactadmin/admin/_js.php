@@ -18,7 +18,7 @@
       "hideMethod": "fadeOut"
     }
     $.ajax({
-      url: '<?= site_url('Admin/menu') ?>',
+      url: '<?= site_url('admin/menu') ?>',
       type: 'post',
       dataType: 'json',
       success: function(data) {

@@ -1,30 +1,22 @@
 <?php
 defined('BASEPATH') or exit('No direct script access allowed');
 
-class Admin extends MY_Controller
+class Admins extends AdminController
 {
 
     public function __construct()
     {
         parent::__construct();
-        $this->load->library('smarty_acl');
-        $this->load->helper('url');
-        $this->load->helper('form');
-        $this->load->library('form_validation');
         $this->logged_in();
         $this->smarty_acl->authorized();
-    }
-
-    protected function logged_in()
-    {
-        if (!$this->smarty_acl->logged_in()) {
-            return redirect('admin/login');
-        }
     }
 
     /*
     * Index
     */
+    /*
+     * Index
+     */
     public function index()
     {
         //print_r($this->session->userdata('login_admin_5dc3d3da95837cb55414978798a86fbee74dd54d'));
@@ -49,7 +41,7 @@ class Admin extends MY_Controller
      */
     public function roles()
     {
-        $URI = 'admin/roles';
+        $URI = 'Admins/roles';
         $data = ['URI' => $URI, 'items' => $this->smarty_acl->roles()];
         $this->admin_views('roles', $data);
     }
@@ -114,13 +106,13 @@ class Admin extends MY_Controller
             //Updated
             if ($role_update) {
                 $this->session->set_flashdata('success_msg', 'Role updated successfully!');
-                return redirect('/admin/roles');
+                return redirect('/Admins/roles');
             }
             $this->session->set_flashdata('error_msg', $this->smarty_acl->errors());
             return redirect(current_url());
         }
         $data = [
-            'form_action' => base_url("admin/roles/edit/$role_id"),
+            'form_action' => base_url("Admins/roles/edit/$role_id"),
             'item' => $item,
             'modules' => $this->smarty_acl->modules(),
             'module_permissions' => $this->smarty_acl->module_permissions($role_id),
@@ -158,7 +150,9 @@ class Admin extends MY_Controller
      */
     public function modules()
     {
-        $URI = 'admin/modules';
+debugBreak();
+        $this->smarty_acl->has_permission('index');
+        $URI = 'Admins/modules';
         $data = ['URI' => $URI, 'items' => $this->smarty_acl->modules()];
         $this->admin_views('modules', $data);
     }
@@ -185,12 +179,12 @@ class Admin extends MY_Controller
             //Created
             if ($module) {
                 $this->session->set_flashdata('success_msg', 'Module created successfully!');
-                return redirect('/admin/modules');
+                return redirect('/Admins/modules');
             }
             $this->session->set_flashdata('error_msg', $this->smarty_acl->errors());
             return redirect(current_url());
         }
-        $data = ['form_action' => base_url('admin/modules/create')];
+        $data = ['form_action' => base_url('Admins/modules/create')];
         $this->admin_views('modules_form', $data);
     }
 
@@ -222,12 +216,12 @@ class Admin extends MY_Controller
             //Updated
             if ($module_update) {
                 $this->session->set_flashdata('success_msg', 'Module updated successfully!');
-                return redirect('/admin/modules');
+                return redirect('/Admins/modules');
             }
             $this->session->set_flashdata('error_msg', $this->smarty_acl->errors());
             return redirect(current_url());
         }
-        $data = ['form_action' => base_url("admin/modules/edit/$module_id"), 'item' => $item];
+        $data = ['form_action' => base_url("Admins/modules/edit/$module_id"), 'item' => $item];
         $this->admin_views('modules_form', $data);
     }
 
@@ -257,11 +251,13 @@ class Admin extends MY_Controller
 
     /******************************* ADMINS ******************************/
     /*
-     * List admins
+     * List managers(admins)
      */
-    public function admins()
+    public function managers()
     {
-        $URI = 'admin/admins';
+debugBreak();
+        $this->smarty_acl->has_permission('index');
+        $URI = 'Admins/managers';
         $data = ['URI' => $URI, 'items' => $this->smarty_acl->admins()];
         $this->admin_views('admins', $data);
     }
@@ -269,7 +265,7 @@ class Admin extends MY_Controller
     /*
      * Create Admin
      */
-    public function admin_create()
+    public function manager_create()
     {
         //Check permission
         $this->smarty_acl->authorized_action();
@@ -295,27 +291,28 @@ class Admin extends MY_Controller
             );
             //Created
             if ($admin) {
-                $this->session->set_flashdata('success_msg', 'Admin created successfully!');
+                $this->session->set_flashdata('success_msg', 'Manager created successfully!');
                 return redirect('/admin/admins');
             }
             $this->session->set_flashdata('error_msg', $this->smarty_acl->errors());
             return redirect(current_url());
         }
         $data = [
-            'form_action' => base_url('admin/admins/create'),
+            'form_action' => base_url('Admins/managers/create'),
             'roles' => $this->smarty_acl->roles()
         ];
-        $this->admin_views('admins_form', $data);
+        $this->admin_views('managers_form', $data);
     }
 
     /**
      * Edit Admin
      * @param int $admin_id
      */
-    public function admin_edit($admin_id)
+    public function manager_edit($admin_id)
     {
         //Check permission
         $this->smarty_acl->authorized_action();
+debugBreak();
         $item = $this->smarty_acl->get_admin($admin_id);
         if (!$item) {
             $this->session->set_flashdata('error_msg', 'Item not found!');
@@ -351,7 +348,7 @@ class Admin extends MY_Controller
             return redirect(current_url());
         }
         $data = [
-            'form_action' => base_url("admin/admins/edit/$admin_id"),
+            'form_action' => base_url("Admins/managers/edit/$admin_id"),
             'item' => (object)$item,
             'roles' => $this->smarty_acl->roles()
         ];
@@ -362,7 +359,7 @@ class Admin extends MY_Controller
      * Delete Admin
      * @param int $admin_id
      */
-    public function admin_delete($admin_id)
+    public function manager_delete($admin_id)
     {
         //Check permission
         $this->smarty_acl->authorized_action();
@@ -388,7 +385,9 @@ class Admin extends MY_Controller
      */
     public function users()
     {
-        $URI = 'admin/users';
+debugBreak();
+        $this->smarty_acl->has_permission('index');
+        $URI = 'Admins/users';
         $data = ['URI' => $URI, 'items' => $this->smarty_acl->users()];
         $this->admin_views('users', $data);
     }
@@ -398,6 +397,7 @@ class Admin extends MY_Controller
      */
     public function user_create()
     {
+debugBreak();
         //Check permission
         $this->smarty_acl->authorized_action();
         //Rules
@@ -427,7 +427,7 @@ class Admin extends MY_Controller
             return redirect(current_url());
         }
         $data = [
-            'form_action' => base_url('admin/users/create')
+            'form_action' => base_url('Admins/users/create')
         ];
         $this->admin_views('users_form', $data);
     }
@@ -502,5 +502,4 @@ class Admin extends MY_Controller
         $this->session->set_flashdata('error_msg', $this->smarty_acl->errors());
         return redirect('/admin/users');
     }
-
 }

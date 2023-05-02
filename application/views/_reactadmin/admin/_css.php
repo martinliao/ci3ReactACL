@@ -41,7 +41,7 @@
         }, 1000);
         var page = window.location.hash.substr(1);
         if (page == "") {
-            page = "Admin/dashboard";
+            page = "admin/dashboard";
         }
         $('#show_data').load('<?= site_url() ?>' + page);
     });

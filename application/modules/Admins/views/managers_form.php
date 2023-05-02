@@ -5,7 +5,7 @@
             <div class="col-6 offset-lg-3">
                 <div class="card">
                     <div class="card-header">
-                        <h5>Admin <?php echo isset($item) ? 'Edit' : 'Create' ;?></h5>
+                        <h5>Manager <?php echo isset($item) ? 'Edit' : 'Create' ;?></h5>
                     </div>
                     <div class="card-body">
                         <form action="<?php echo $form_action ;?>" method="post">

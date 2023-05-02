@@ -15,6 +15,47 @@ class Access extends AdminController
 
 	public function index()
 	{
+		//取得User現有 role_id
+		$_admins = $this->smarty_acl->admins(false);
+        $admin_role_id = $_admins[0]['role_id'];
+
+		if ($admin_role_id != 1) {
+			$roles = $this->db->query('SELECT id as id_role, name as role FROM acl_roles WHERE id != 1')->result();
+			$menus = $this->db->query('SELECT * FROM user_menu WHERE id_menu != 1 ORDER BY no_order ASC')->result();
+		} else {
+			//$roles = $this->db->get('acl_roles')->result();
+			$roles = $this->db->query('SELECT id as id_role, name as role FROM acl_roles')->result();
+			$menus = $this->db->get('user_menu')->result();
+		}
+
+		foreach($roles as $role) {
+			$tmp[$role->id_role] = [];
+			foreach($menus as $menu) {
+				$_check_val= '';
+				if ( $role->id_role == 1 && $menu->id_menu == 1) {
+					$_check_val= 'disabled checked';
+				} else {
+					$cek = $this->db->get_where('user_access', ['id_role' => $role->id_role, 'id_menu' => $menu->id_menu])->row();
+					$_check_val= ( $cek ) ? 'checked' : '';
+				}
+				$tmp[$role->id_role][$menu->id_menu] = $_check_val;
+			}
+		}
+
+		$data = [
+			'title' => 'Access Page',
+			'roles' => $roles,
+			'menus' => $menus,
+			'permission' => $tmp
+		];
+		$this->load->view('_layout/general/head', $data);
+		$this->load->view('core/js', $data);
+		$this->load->view('index', $data);
+	}
+
+	public function user_access()
+	{
+		//  給 reactadmin-user_access的版本, 2May2023
 		$_admins = $this->smarty_acl->admins(false);
         $admin_role_id = $_admins[0]['role_id'];
 		if ($admin_role_id != 1) {

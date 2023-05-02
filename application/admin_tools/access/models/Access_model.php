@@ -3,8 +3,15 @@ defined('BASEPATH') or exit('No direct script access allowed');
 
 class Access_model extends CI_Model
 {
+    protected $settings = null;
+
     public function __construct()
     {
+        $this->config->load('smarty_acl', TRUE);
+        $tables = $this->config->item('tables', 'smarty_acl');
+        $this->settings['prefix'] = $tables['prefix'] ? $tables['prefix'].'_' : '';
+        $this->settings['permissions'] = $tables['module_permissions'];
+
         $this->table = 'user_access';
         $this->id = 'id_access';
     }

@@ -6,8 +6,8 @@ $route['404_override'] = '';
 $route['translate_uri_dashes'] = FALSE;
 
 // React
-$route['admin'] = 'Admin/index';
-$route['dashboard'] = 'Admin/dashboard';
+#$route['admin'] = 'Admin/index';
+$route['dashboard'] = 'admin/dashboard';
 
 // SmartyaACL route
 $route['importdatabase'] = 'welcome/importdatabase';
